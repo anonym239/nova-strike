@@ -71,7 +71,7 @@
       <div class="row"><label>Bewegung</label><div class="seg" data-key="size">
         <button data-v="gross">Groß</button><button data-v="normal">Normal</button><button data-v="klein">Klein</button></div></div>
       <div class="row"><label>Grafik</label><div class="seg" data-key="gfx">
-        <button data-v="schnell">Flüssig</button><button data-v="schoen">Schön</button></div></div>
+        <button data-v="spar">Sparsam</button><button data-v="schnell">Flüssig</button><button data-v="schoen">Schön</button></div></div>
       <p>Die Steuerzone ist der Bereich im Kamerabild, in dem du deine Hand bewegst – lege sie so, dass die Hand
         nicht vor dem Bildschirm ist. „Eigene Position“ nimmt die Stelle, an der du beim Start kneifst.</p>
     </div>
@@ -95,12 +95,13 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const d2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 let W = 0, H = 0, U = 1;
-let gfxHi = false; // "Schön": volle Auflösung und Leuchteffekte, sonst sparsame Darstellung
+// "Schön": volle Auflösung und Leuchteffekte · "Flüssig": begrenzte Auflösung · "Sparsam": stark reduziert
+let gfxHi = false, gfxLow = false, autoScale = 1;
 function resize() {
-  const d = gfxHi ? Math.min(devicePixelRatio || 1, 2) : 1;
   W = innerWidth; H = innerHeight; U = Math.min(W, H) / 720;
-  cv.width = W * d; cv.height = H * d;
-  ctx.setTransform(d, 0, 0, d, 0, 0);
+  const d = (gfxHi ? Math.min(devicePixelRatio || 1, 2) : Math.min(gfxLow ? .6 : 1, (gfxLow ? 900 : 1280) / W)) * autoScale;
+  cv.width = Math.round(W * d); cv.height = Math.round(H * d);
+  ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
 }
 addEventListener('resize', resize); resize();
 
@@ -124,7 +125,7 @@ function initAudio() {
 
 /* ---------- Eingabe ---------- */
 const input = { mode: null, x: 0, y: 0, fire: false, shield: false, present: false, lostT: 0, lm: null, raw: null };
-let landmarker = null, lastVT = -1, pinching = false, openSince = 0, lastDetect = 0;
+let landmarker = null, worker = null, workerBusy = false, trackReady = false, lastVT = -1, pinching = false, openSince = 0, lastDetect = 0;
 let trackEvery = 45; // ms zwischen zwei Hand-Erkennungen, passt sich der Bildrate an
 
 // Kleines Kamerabild: wird nur bei jeder Erkennung neu gezeichnet, nicht in jedem Frame
@@ -142,7 +143,8 @@ function updatePreview(lm) {
 
 const settings = { hand: 'auto', zone: 'mitte', size: 'gross', gfx: 'schnell' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('novaStrikeSettings') || '{}')); } catch {}
-gfxHi = settings.gfx === 'schoen'; resize();
+function applyGfx() { gfxHi = settings.gfx === 'schoen'; gfxLow = settings.gfx === 'spar'; autoScale = 1; resize(); }
+applyGfx();
 function saveSettings() { try { localStorage.setItem('novaStrikeSettings', JSON.stringify(settings)); } catch {} }
 
 // Steuerzone im gespiegelten Kamerabild (0..1): Mittelpunkt je Voreinstellung, Kantenlänge je Bewegungsgröße
@@ -175,11 +177,57 @@ function pickHand(res, now) {
   return h;
 }
 
-function trackHand(now, dt) {
-  if (!landmarker || video.readyState < 2 || now - lastDetect < trackEvery || video.currentTime === lastVT) return;
+const WORKER_SRC = `
+let lm = null;
+self.onmessage = async e => {
+  const m = e.data;
+  if (m.init) {
+    try {
+      const v = await import(m.cdn + '/vision_bundle.mjs');
+      const fs = await v.FilesetResolver.forVisionTasks(m.cdn + '/wasm');
+      const make = delegate => v.HandLandmarker.createFromOptions(fs, {
+        baseOptions: { modelAssetPath: m.model, delegate }, runningMode: 'VIDEO', numHands: 2 });
+      try { lm = await make('GPU'); } catch { lm = await make('CPU'); }
+      postMessage({ ready: true });
+    } catch (err) { postMessage({ error: String(err) }); }
+  } else if (m.frame) {
+    let r = null;
+    try { r = lm.detectForVideo(m.frame, m.t); } catch {}
+    m.frame.close();
+    postMessage({ landmarks: r ? r.landmarks : [], handedness: r ? r.handedness : [] });
+  }
+};`;
+function startWorker() {
+  return new Promise((resolve, reject) => {
+    if (!window.Worker || !window.createImageBitmap) return reject(new Error('kein Worker'));
+    const w = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+    const timer = setTimeout(() => { w.terminate(); reject(new Error('Zeitüberschreitung')); }, 30000);
+    w.onerror = e => { clearTimeout(timer); w.terminate(); reject(new Error(e.message || 'Worker-Fehler')); };
+    w.onmessage = e => {
+      if (e.data.ready) { clearTimeout(timer); worker = w; w.onerror = null; resolve(); }
+      else if (e.data.error) { clearTimeout(timer); w.terminate(); reject(new Error(e.data.error)); }
+      else { workerBusy = false; applyHands(e.data, performance.now()); }
+    };
+    w.postMessage({ init: true, cdn: CDN, model: MODEL });
+  });
+}
+
+function trackHand(now) {
+  if (workerBusy && now - lastDetect > 2000) workerBusy = false;
+  if (!trackReady || workerBusy || video.readyState < 2 || now - lastDetect < trackEvery || video.currentTime === lastVT) return;
   lastVT = video.currentTime; lastDetect = now;
+  if (worker) {
+    workerBusy = true;
+    createImageBitmap(video).then(bmp => worker.postMessage({ frame: bmp, t: now }, [bmp])).catch(() => { workerBusy = false; });
+  } else {
+    let res = null;
+    try { res = landmarker.detectForVideo(video, now); } catch {}
+    applyHands(res || {}, now);
+  }
+}
+function applyHands(res, now) {
   let hand = null;
-  try { hand = pickHand(landmarker.detectForVideo(video, now), now); } catch {}
+  try { hand = pickHand(res, now); } catch {}
   const lm = hand && hand.lm;
   input.lm = lm || null;
   if (!lm) { input.present = false; input.fire = input.shield = false; pinching = false; openSince = 0; updatePreview(null); return; }
@@ -205,11 +253,14 @@ async function startCam() {
   const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 480 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' }, audio: false });
   video.srcObject = stream; await video.play();
   statusEl.textContent = 'Hand-Tracking wird geladen …';
+  try { await startWorker(); trackReady = true; return; }
+  catch (e) { console.warn('Hand-Tracking im Worker nicht möglich, nutze den Hauptthread:', e.message); }
   const { HandLandmarker, FilesetResolver } = await import(CDN + '/vision_bundle.mjs');
   const fileset = await FilesetResolver.forVisionTasks(CDN + '/wasm');
   const make = delegate => HandLandmarker.createFromOptions(fileset, {
     baseOptions: { modelAssetPath: MODEL, delegate }, runningMode: 'VIDEO', numHands: 2 });
   try { landmarker = await make('GPU'); } catch { landmarker = await make('CPU'); }
+  trackReady = true;
 }
 
 const btnCam = document.getElementById('btnCam'), btnMouse = document.getElementById('btnMouse');
@@ -217,18 +268,18 @@ for (const seg of document.querySelectorAll('.seg')) {
   const key = seg.dataset.key;
   const sync = () => { for (const b of seg.children) b.classList.toggle('on', b.dataset.v === settings[key]); };
   seg.onclick = e => { const v = e.target.dataset.v; if (!v) return; settings[key] = v; lock = null; saveSettings(); sync();
-    if (key === 'gfx') { gfxHi = v === 'schoen'; resize(); } };
+    if (key === 'gfx') applyGfx(); };
   sync();
 }
 document.getElementById('btnSettings').onclick = () => {
   state = 'menu'; statusEl.textContent = ''; document.body.classList.remove('idle');
   btnCam.disabled = btnMouse.disabled = false;
-  if (landmarker) btnCam.textContent = 'WEITER MIT WEBCAM';
+  if (trackReady) btnCam.textContent = 'WEITER MIT WEBCAM';
   menu.classList.remove('hidden');
 };
 btnCam.onclick = async () => {
   initAudio();
-  if (landmarker) { input.mode = 'cam'; input.present = input.fire = input.shield = false; enterReady(); return; }
+  if (trackReady) { input.mode = 'cam'; input.present = input.fire = input.shield = false; enterReady(); return; }
   btnCam.disabled = btnMouse.disabled = true;
   try { await startCam(); input.mode = 'cam'; enterReady(); }
   catch (e) {
@@ -454,14 +505,15 @@ function update(dt) {
   stepParticles(dt);
   // Triebwerks-Spur
   if (state === 'play') G.parts.push({ x: p.x + rand(-4, 4) * U, y: p.y + 18 * U, vx: 0, vy: rand(120, 260) * U, life: .25, max: .25, col: '#35e0ff', s: 3 * U });
-  G.enemies = G.enemies.filter(o => !o.dead); G.bullets = G.bullets.filter(o => !o.dead);
-  G.eb = G.eb.filter(o => !o.dead); G.pups = G.pups.filter(o => !o.dead);
+  prune(G.enemies, alive); prune(G.bullets, alive); prune(G.eb, alive); prune(G.pups, alive);
 }
 
+const alive = o => !o.dead, living = o => o.life > 0;
+function prune(a, keep) { let j = 0; for (let i = 0; i < a.length; i++) if (keep(a[i])) a[j++] = a[i]; a.length = j; }
 function stepParticles(dt) {
   for (const q of G.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; }
   for (const t of G.texts) { t.y -= 40 * U * dt; t.life -= dt; }
-  G.parts = G.parts.filter(q => q.life > 0); G.texts = G.texts.filter(t => t.life > 0);
+  prune(G.parts, living); prune(G.texts, living);
   G.shake = Math.max(0, G.shake - dt); G.flash = Math.max(0, G.flash - dt);
 }
 
@@ -643,9 +695,11 @@ function frame(now) {
   ftAvg += (Math.min(ms, 100) - ftAvg) * .05; adaptT += ms;
   if (adaptT > 1000) {
     adaptT = 0;
-    trackEvery = clamp(trackEvery + (ftAvg > 20 ? 8 : ftAvg < 17.5 ? -4 : 0), gfxHi ? 30 : 45, 110);
+    trackEvery = clamp(trackEvery + (ftAvg > 20 ? 8 : ftAvg < 17.5 ? -4 : 0), gfxHi ? 30 : gfxLow ? 66 : 45, 110);
+    // Reicht das nicht, wird zusätzlich die Auflösung schrittweise gesenkt
+    if (!gfxHi && !gfxLow && ftAvg > 21 && trackEvery >= 80 && autoScale > .7) { autoScale = Math.max(.7, autoScale - .15); resize(); }
   }
-  if (input.mode === 'cam') trackHand(now, dt);
+  if (input.mode === 'cam') trackHand(now);
   update(dt); draw();
   requestAnimationFrame(frame);
 }
