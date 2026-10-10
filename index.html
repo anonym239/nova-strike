@@ -70,6 +70,8 @@
         <button data-v="linksunten">Links unten</button><button data-v="rechtsunten">Rechts unten</button><button data-v="eigen">Eigene Position</button></div></div>
       <div class="row"><label>Bewegung</label><div class="seg" data-key="size">
         <button data-v="gross">Groß</button><button data-v="normal">Normal</button><button data-v="klein">Klein</button></div></div>
+      <div class="row"><label>Grafik</label><div class="seg" data-key="gfx">
+        <button data-v="schnell">Flüssig</button><button data-v="schoen">Schön</button></div></div>
       <p>Die Steuerzone ist der Bereich im Kamerabild, in dem du deine Hand bewegst – lege sie so, dass die Hand
         nicht vor dem Bildschirm ist. „Eigene Position“ nimmt die Stelle, an der du beim Start kneifst.</p>
     </div>
@@ -84,7 +86,7 @@
 const CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
-const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const cv = document.getElementById('game'), ctx = cv.getContext('2d', { alpha: false });
 const video = document.getElementById('cam');
 const menu = document.getElementById('menu'), statusEl = document.getElementById('status');
 const TAU = Math.PI * 2;
@@ -93,8 +95,9 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const d2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 let W = 0, H = 0, U = 1;
+let gfxHi = false; // "Schön": volle Auflösung und Leuchteffekte, sonst sparsame Darstellung
 function resize() {
-  const d = Math.min(devicePixelRatio || 1, 2);
+  const d = gfxHi ? Math.min(devicePixelRatio || 1, 2) : 1;
   W = innerWidth; H = innerHeight; U = Math.min(W, H) / 720;
   cv.width = W * d; cv.height = H * d;
   ctx.setTransform(d, 0, 0, d, 0, 0);
@@ -121,10 +124,25 @@ function initAudio() {
 
 /* ---------- Eingabe ---------- */
 const input = { mode: null, x: 0, y: 0, fire: false, shield: false, present: false, lostT: 0, lm: null, raw: null };
-let landmarker = null, lastVT = -1, pinching = false, openT = 0;
+let landmarker = null, lastVT = -1, pinching = false, openSince = 0, lastDetect = 0;
+let trackEvery = 45; // ms zwischen zwei Hand-Erkennungen, passt sich der Bildrate an
 
-const settings = { hand: 'auto', zone: 'mitte', size: 'gross' };
+// Kleines Kamerabild: wird nur bei jeder Erkennung neu gezeichnet, nicht in jedem Frame
+const pv = document.createElement('canvas'); pv.width = 200; pv.height = 150;
+const pctx = pv.getContext('2d');
+function updatePreview(lm) {
+  pctx.save(); pctx.translate(pv.width, 0); pctx.scale(-1, 1);
+  pctx.drawImage(video, 0, 0, pv.width, pv.height);
+  if (lm) {
+    pctx.fillStyle = input.fire ? '#ffd27a' : input.shield ? '#35e0ff' : '#7dff9b';
+    for (const q of lm) pctx.fillRect(q.x * pv.width - 2, q.y * pv.height - 2, 4, 4);
+  }
+  pctx.restore();
+}
+
+const settings = { hand: 'auto', zone: 'mitte', size: 'gross', gfx: 'schnell' };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('novaStrikeSettings') || '{}')); } catch {}
+gfxHi = settings.gfx === 'schoen'; resize();
 function saveSettings() { try { localStorage.setItem('novaStrikeSettings', JSON.stringify(settings)); } catch {} }
 
 // Steuerzone im gespiegelten Kamerabild (0..1): Mittelpunkt je Voreinstellung, Kantenlänge je Bewegungsgröße
@@ -149,8 +167,7 @@ function pickHand(res, now) {
     if (!h) { if (now - lockSeen < 700) return null; lock = null; }
   }
   if (!h) {
-    // Das Kamerabild ist ungespiegelt, deshalb meldet MediaPipe die rechte Hand als "Left"
-    const want = settings.hand === 'rechts' ? 'Left' : settings.hand === 'links' ? 'Right' : null;
+    const want = settings.hand === 'rechts' ? 'Right' : settings.hand === 'links' ? 'Left' : null;
     h = hands.filter(o => !want || o.label === want).sort((a, b) => b.size - a.size)[0];
   }
   if (!h) return null;
@@ -159,32 +176,33 @@ function pickHand(res, now) {
 }
 
 function trackHand(now, dt) {
-  if (!landmarker || video.readyState < 2 || video.currentTime === lastVT) return;
-  lastVT = video.currentTime;
+  if (!landmarker || video.readyState < 2 || now - lastDetect < trackEvery || video.currentTime === lastVT) return;
+  lastVT = video.currentTime; lastDetect = now;
   let hand = null;
   try { hand = pickHand(landmarker.detectForVideo(video, now), now); } catch {}
   const lm = hand && hand.lm;
   input.lm = lm || null;
-  if (!lm) { input.present = false; input.fire = input.shield = false; pinching = false; openT = 0; return; }
+  if (!lm) { input.present = false; input.fire = input.shield = false; pinching = false; openSince = 0; updatePreview(null); return; }
   input.present = true;
   const z = zoneRect();
   input.raw = hand.c;
   input.x = clamp((hand.c.x - z.x) / z.s, 0, 1) * W;
   input.y = clamp((hand.c.y - z.y) / z.s, 0, 1) * H;
-  const size = d2(lm[0], lm[9]) || 1e-6;
+  const size = Math.max(d2(lm[0], lm[9]), d2(lm[5], lm[17]) * 1.25) || 1e-6;
   const pinch = d2(lm[4], lm[8]) / size;
   if (pinching ? pinch > 0.5 : pinch < 0.32) pinching = !pinching;
   const ext = i => d2(lm[i], lm[0]) > d2(lm[i - 2], lm[0]) * 1.15;
   const open = !pinching && pinch > 0.7 && ext(8) && ext(12) && ext(16) && ext(20);
-  openT = open ? openT + dt : 0;
+  if (!open) openSince = 0; else if (!openSince) openSince = now;
   input.fire = pinching;
-  input.shield = openT > 0.1;
+  input.shield = open && now - openSince > 100;
+  updatePreview(lm);
 }
 
 async function startCam() {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Dieser Browser unterstützt keine Webcam.');
   statusEl.textContent = 'Kamera wird gestartet … bitte Zugriff erlauben.';
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 480 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' }, audio: false });
   video.srcObject = stream; await video.play();
   statusEl.textContent = 'Hand-Tracking wird geladen …';
   const { HandLandmarker, FilesetResolver } = await import(CDN + '/vision_bundle.mjs');
@@ -198,7 +216,8 @@ const btnCam = document.getElementById('btnCam'), btnMouse = document.getElement
 for (const seg of document.querySelectorAll('.seg')) {
   const key = seg.dataset.key;
   const sync = () => { for (const b of seg.children) b.classList.toggle('on', b.dataset.v === settings[key]); };
-  seg.onclick = e => { const v = e.target.dataset.v; if (!v) return; settings[key] = v; lock = null; saveSettings(); sync(); };
+  seg.onclick = e => { const v = e.target.dataset.v; if (!v) return; settings[key] = v; lock = null; saveSettings(); sync();
+    if (key === 'gfx') { gfxHi = v === 'schoen'; resize(); } };
   sync();
 }
 document.getElementById('btnSettings').onclick = () => {
@@ -230,6 +249,7 @@ addEventListener('pointerdown', e => {
 });
 addEventListener('pointerup', e => { if (input.mode !== 'mouse') return; if (e.button === 2) input.shield = false; else input.fire = false; });
 addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('blur', () => { if (input.mode === 'mouse') input.fire = input.shield = false; });
 addEventListener('keydown', e => {
   if (e.code === 'Space' && input.mode === 'mouse') { input.shield = true; e.preventDefault(); }
   if ((e.code === 'KeyP' || e.code === 'Escape') && state === 'play') userPause = !userPause;
@@ -237,10 +257,10 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { if (e.code === 'Space' && input.mode === 'mouse') input.shield = false; });
 
 /* ---------- Spielzustand ---------- */
-let state = 'menu', userPause = false, hold = 0, overT = 0, G = null;
-const stars = Array.from({ length: 140 }, () => ({ x: Math.random(), y: Math.random(), z: rand(.2, 1) }));
+let state = 'menu', userPause = false, hold = 0, overT = 0, armed = false, G = null;
+const stars = Array.from({ length: 140 }, () => { const z = rand(.2, 1); return { x: Math.random(), y: Math.random(), z, c: `rgba(190,220,255,${(.25 + z * .6).toFixed(2)})` }; });
 
-function enterReady() { menu.classList.add('hidden'); document.body.classList.add('idle'); state = 'ready'; hold = 0; }
+function enterReady() { menu.classList.add('hidden'); document.body.classList.add('idle'); state = 'ready'; hold = 0; armed = true; }
 
 function newGame() {
   if (input.mode === 'cam' && settings.zone === 'eigen' && input.raw) customC = [input.raw.x, input.raw.y];
@@ -280,6 +300,8 @@ function spawn(type) {
 }
 
 function burst(x, y, col, n = 14, sp = 220) {
+  if (G.parts.length > (gfxHi ? 500 : 220)) return;
+  if (!gfxHi) n = Math.ceil(n * .6);
   for (let i = 0; i < n; i++) {
     const a = rand(0, TAU), v = rand(.2, 1) * sp * U;
     G.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rand(.3, .8), max: .8, col, s: rand(1.5, 4) * U });
@@ -298,7 +320,7 @@ function hurtPlayer() {
   G.combo = 1; G.shake = .5; G.flash = .35;
   burst(p.x, p.y, '#35e0ff', 30, 320); sfx(160, .5, 'sawtooth', .12, -120);
   if (p.lives <= 0) {
-    state = 'over'; overT = 0; hold = 0; document.body.classList.remove('playing'); document.body.classList.add('idle');
+    state = 'over'; overT = 0; hold = 0; armed = false; document.body.classList.remove('playing'); document.body.classList.add('idle');
     burst(p.x, p.y, '#ffffff', 60, 480);
     if (G.score > best) { best = G.score; G.newBest = true; saveBest(); }
   }
@@ -325,7 +347,8 @@ function update(dt) {
 
   if (state === 'ready' || state === 'over') {
     overT += dt;
-    const ok = input.fire && input.present && (state === 'ready' || overT > 1.2);
+    if (!input.fire) armed = true;
+    const ok = armed && input.fire && input.present && (state === 'ready' || overT > 1.2);
     hold = ok ? hold + dt : 0;
     if (hold > (input.mode === 'cam' ? .7 : .02)) { hold = 0; input.fire = input.mode === 'cam' && input.fire; newGame(); }
   }
@@ -443,6 +466,7 @@ function stepParticles(dt) {
 }
 
 /* ---------- Zeichnen ---------- */
+function glow(col, blur) { if (gfxHi) { ctx.shadowColor = col; ctx.shadowBlur = blur; } }
 function poly(x, y, r, n, rot = 0) {
   ctx.beginPath();
   for (let i = 0; i < n; i++) { const a = rot + i / n * TAU; ctx[i ? 'lineTo' : 'moveTo'](x + Math.cos(a) * r, y + Math.sin(a) * r); }
@@ -461,7 +485,7 @@ function shipShape(x, y, s, tilt = 0) {
 
 function drawEnemy(e) {
   ctx.save();
-  ctx.shadowColor = e.col; ctx.shadowBlur = 16;
+  glow(e.col, 16);
   ctx.fillStyle = e.flash > 0 ? '#fff' : 'rgba(8,10,26,.9)'; ctx.strokeStyle = e.col; ctx.lineWidth = 2.5 * U;
   if (e.type === 'drone') poly(e.x, e.y, e.r, 4, e.t * 2);
   else if (e.type === 'zig') poly(e.x, e.y, e.r, 3, Math.PI / 2);
@@ -501,13 +525,13 @@ function drawWorld() {
   }
   const pc = { W: '#7dff9b', R: '#ffd27a', E: '#35e0ff', H: '#ff7ab0' }, pl = { W: 'W', R: '»', E: '⚡', H: '♥' };
   for (const u of G.pups) {
-    ctx.save(); ctx.shadowColor = pc[u.kind]; ctx.shadowBlur = 14; ctx.strokeStyle = pc[u.kind]; ctx.lineWidth = 2 * U;
+    ctx.save(); glow(pc[u.kind], 14); ctx.strokeStyle = pc[u.kind]; ctx.lineWidth = 2 * U;
     ctx.fillStyle = 'rgba(8,10,26,.85)'; ctx.beginPath(); ctx.arc(u.x, u.y, 15 * U * (1 + Math.sin(u.t * 6) * .08), 0, TAU); ctx.fill(); ctx.stroke(); ctx.restore();
     ctx.textBaseline = 'middle'; text(pl[u.kind], u.x, u.y + U, 15 * U, pc[u.kind]); ctx.textBaseline = 'alphabetic';
   }
 
   if (state === 'play' && (p.inv <= 0 || Math.floor(G.t * 14) % 2)) {
-    ctx.save(); ctx.shadowColor = '#35e0ff'; ctx.shadowBlur = 20;
+    ctx.save(); glow('#35e0ff', 20);
     shipShape(p.x, p.y, U, p.tilt); ctx.fillStyle = '#0b1530'; ctx.fill();
     ctx.strokeStyle = p.rapid > 0 ? '#ffd27a' : '#35e0ff'; ctx.lineWidth = 2.5 * U; ctx.stroke();
     ctx.fillStyle = '#e8fbff'; ctx.beginPath(); ctx.ellipse(p.x, p.y - 4 * U, 3 * U, 7 * U, 0, 0, TAU); ctx.fill();
@@ -559,15 +583,7 @@ function drawHUD() {
 function drawCamPreview() {
   if (input.mode !== 'cam' || video.readyState < 2) return;
   const w = clamp(200 * U, 130, 240), h = w * .75, x = W - w - 16, y = H - h - 16;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  ctx.globalAlpha = .8; ctx.translate(x + w, y); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, w, h);
-  ctx.globalAlpha = 1;
-  if (input.lm) {
-    ctx.fillStyle = input.fire ? '#ffd27a' : input.shield ? '#35e0ff' : '#7dff9b';
-    for (const q of input.lm) { ctx.beginPath(); ctx.arc(q.x * w, q.y * h, 2.4, 0, TAU); ctx.fill(); }
-  }
-  ctx.restore();
+  ctx.globalAlpha = .85; ctx.drawImage(pv, x, y, w, h); ctx.globalAlpha = 1;
   const z = zoneRect();
   ctx.setLineDash([5, 4]); ctx.strokeStyle = '#ffd27a'; ctx.lineWidth = 1.5;
   ctx.strokeRect(x + z.x * w, y + z.y * h, z.s * w, z.s * h); ctx.setLineDash([]);
@@ -585,7 +601,7 @@ function drawCursor() {
 
 function draw() {
   ctx.fillStyle = '#05060f'; ctx.fillRect(0, 0, W, H);
-  for (const s of stars) { ctx.fillStyle = `rgba(190,220,255,${.25 + s.z * .6})`; ctx.fillRect(s.x * W, s.y * H, s.z * 2.2, s.z * 2.2); }
+  for (const s of stars) { ctx.fillStyle = s.c; ctx.fillRect(s.x * W, s.y * H, s.z * 2.2, s.z * 2.2); }
   if (state === 'menu') return;
   const startHint = input.mode === 'cam' ? 'Daumen + Zeigefinger zusammenkneifen und kurz halten' : 'Klicken zum Starten';
 
@@ -619,8 +635,16 @@ function draw() {
 }
 
 let last = performance.now();
+let ftAvg = 16, adaptT = 0;
 function frame(now) {
-  const dt = Math.min((now - last) / 1000, .05); last = now;
+  const ms = now - last, dt = Math.min(ms / 1000, .05); last = now;
+  if (innerWidth !== W || innerHeight !== H) resize();
+  // Ruckelt das Bild, wird die Hand seltener erkannt, damit das Spiel flüssig bleibt
+  ftAvg += (Math.min(ms, 100) - ftAvg) * .05; adaptT += ms;
+  if (adaptT > 1000) {
+    adaptT = 0;
+    trackEvery = clamp(trackEvery + (ftAvg > 20 ? 8 : ftAvg < 17.5 ? -4 : 0), gfxHi ? 30 : 45, 110);
+  }
   if (input.mode === 'cam') trackHand(now, dt);
   update(dt); draw();
   requestAnimationFrame(frame);

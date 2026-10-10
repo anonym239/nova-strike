@@ -24,6 +24,7 @@ Im Startmenü (und über „⚙ Einstellungen“ vor jeder Runde):
 - **Steuerzone** – der Bereich im Kamerabild, in dem du die Hand bewegst (Mitte, Unten, Links, Rechts,
   Ecken oder „Eigene Position“ = dort, wo du beim Start kneifst). So ist die Hand nicht vor dem Bildschirm.
 - **Bewegung** – wie groß die Handbewegung für den ganzen Bildschirm sein muss.
+- **Grafik** – „Flüssig“ (Standard, sparsam für Laptops) oder „Schön“ (volle Auflösung, Leuchteffekte).
 
 Die Steuerzone ist im kleinen Kamerabild unten rechts gestrichelt eingezeichnet.
 
