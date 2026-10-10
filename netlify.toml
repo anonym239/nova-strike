@@ -1,0 +1,9 @@
+# Statische Seite ohne Build-Schritt: Netlify liefert einfach den Repo-Inhalt aus.
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Permissions-Policy = "camera=(self)"
+    X-Content-Type-Options = "nosniff"
