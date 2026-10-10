@@ -14,11 +14,11 @@
     background:radial-gradient(ellipse at center,rgba(10,14,40,.55),rgba(3,4,12,.92))}
   #menu.hidden{display:none}
   .panel{width:min(620px,92vw);text-align:center}
-  h1{margin:0;font-size:clamp(44px,9vw,84px);letter-spacing:.12em;font-weight:800;
+  h1{margin:0;font-size:clamp(36px,7vw,64px);letter-spacing:.12em;font-weight:800;
     background:linear-gradient(90deg,#35e0ff,#b06bff,#ff4fa3);-webkit-background-clip:text;
     background-clip:text;color:transparent;filter:drop-shadow(0 0 22px rgba(80,170,255,.45))}
-  .sub{margin:6px 0 26px;letter-spacing:.34em;font-size:13px;color:#8fb6d9;text-transform:uppercase}
-  .controls{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:26px}
+  .sub{margin:6px 0 18px;letter-spacing:.34em;font-size:13px;color:#8fb6d9;text-transform:uppercase}
+  .controls{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
   .card{border:1px solid rgba(90,170,255,.28);border-radius:14px;padding:14px 10px;
     background:rgba(20,30,70,.35)}
   .card .ico{font-size:30px;line-height:1.2}
@@ -30,6 +30,19 @@
   button:hover{transform:scale(1.05)}
   button.ghost{background:transparent;color:#bfe9ff;box-shadow:none;border-color:rgba(120,190,255,.5)}
   button:disabled{opacity:.45;cursor:default;transform:none}
+  .settings{margin:0 0 22px;text-align:left;border:1px solid rgba(90,170,255,.2);border-radius:14px;
+    padding:12px 14px;background:rgba(12,18,48,.45)}
+  .row{display:flex;align-items:center;gap:10px;margin:6px 0}
+  .row label{flex:0 0 92px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#8fb6d9}
+  .seg{display:flex;flex-wrap:wrap;gap:6px}
+  .seg button{margin:0;padding:6px 12px;font-size:12px;font-weight:600;letter-spacing:.02em;box-shadow:none;
+    background:transparent;color:#bfe9ff;border-color:rgba(120,190,255,.35)}
+  .seg button:hover{transform:none;border-color:#35e0ff}
+  .seg button.on{background:#35e0ff;color:#04121c;border-color:#35e0ff}
+  .settings p{margin:8px 0 0;font-size:12px;color:#6f8cab}
+  #btnSettings{position:fixed;top:14px;right:14px;display:none;padding:8px 16px;font-size:12px;margin:0}
+  body.idle #btnSettings{display:block}
+  .panel{max-height:96vh;overflow:auto}
   #status{min-height:22px;margin-top:16px;font-size:14px;color:#ffd27a}
   .hint{margin-top:10px;font-size:12px;color:#6f8cab}
 </style>
@@ -37,6 +50,8 @@
 <body>
 <canvas id="game"></canvas>
 <video id="cam" playsinline muted></video>
+
+<button id="btnSettings" class="ghost">⚙ Einstellungen</button>
 
 <div id="menu">
   <div class="panel">
@@ -46,6 +61,17 @@
       <div class="card"><div class="ico">🖐️</div><b>Hand bewegen</b><span>steuert dein Schiff</span></div>
       <div class="card"><div class="ico">🤏</div><b>Kneifen</b><span>Daumen + Zeigefinger = Feuer</span></div>
       <div class="card"><div class="ico">✋</div><b>Offene Hand</b><span>alle Finger gestreckt = Schild</span></div>
+    </div>
+    <div class="settings">
+      <div class="row"><label>Hand</label><div class="seg" data-key="hand">
+        <button data-v="auto">Automatisch</button><button data-v="rechts">Rechte Hand</button><button data-v="links">Linke Hand</button></div></div>
+      <div class="row"><label>Steuerzone</label><div class="seg" data-key="zone">
+        <button data-v="mitte">Mitte</button><button data-v="unten">Unten</button><button data-v="links">Links</button><button data-v="rechts">Rechts</button>
+        <button data-v="linksunten">Links unten</button><button data-v="rechtsunten">Rechts unten</button><button data-v="eigen">Eigene Position</button></div></div>
+      <div class="row"><label>Bewegung</label><div class="seg" data-key="size">
+        <button data-v="gross">Groß</button><button data-v="normal">Normal</button><button data-v="klein">Klein</button></div></div>
+      <p>Die Steuerzone ist der Bereich im Kamerabild, in dem du deine Hand bewegst – lege sie so, dass die Hand
+        nicht vor dem Bildschirm ist. „Eigene Position“ nimmt die Stelle, an der du beim Start kneifst.</p>
     </div>
     <button id="btnCam">WEBCAM STARTEN</button>
     <button id="btnMouse" class="ghost">MIT MAUS SPIELEN</button>
@@ -94,21 +120,57 @@ function initAudio() {
 }
 
 /* ---------- Eingabe ---------- */
-const input = { mode: null, x: 0, y: 0, fire: false, shield: false, present: false, lostT: 0, lm: null };
+const input = { mode: null, x: 0, y: 0, fire: false, shield: false, present: false, lostT: 0, lm: null, raw: null };
 let landmarker = null, lastVT = -1, pinching = false, openT = 0;
-const MARGIN = 0.16; // Randbereich der Kamera, der nicht gebraucht wird
+
+const settings = { hand: 'auto', zone: 'mitte', size: 'gross' };
+try { Object.assign(settings, JSON.parse(localStorage.getItem('novaStrikeSettings') || '{}')); } catch {}
+function saveSettings() { try { localStorage.setItem('novaStrikeSettings', JSON.stringify(settings)); } catch {} }
+
+// Steuerzone im gespiegelten Kamerabild (0..1): Mittelpunkt je Voreinstellung, Kantenlänge je Bewegungsgröße
+const ZONES = { mitte: [.5, .5], unten: [.5, .75], links: [.25, .5], rechts: [.75, .5], linksunten: [.25, .75], rechtsunten: [.75, .75] };
+const SIZES = { gross: .66, normal: .46, klein: .3 };
+let customC = [.5, .5];
+function zoneRect() {
+  const s = SIZES[settings.size] || SIZES.gross, c = settings.zone === 'eigen' ? customC : ZONES[settings.zone] || ZONES.mitte;
+  const fit = v => clamp(v, s / 2 + .02, 1 - s / 2 - .02);
+  return { x: fit(c[0]) - s / 2, y: fit(c[1]) - s / 2, s };
+}
+
+// Bleibt bei der einmal gewählten Hand, statt zur anderen zu springen
+let lock = null, lockSeen = 0;
+function pickHand(res, now) {
+  const hands = (res.landmarks || []).map((lm, i) => ({ lm, size: d2(lm[0], lm[9]),
+    label: res.handedness?.[i]?.[0]?.categoryName,
+    c: { x: 1 - (lm[0].x + lm[5].x + lm[17].x) / 3, y: (lm[0].y + lm[5].y + lm[17].y) / 3 } }));
+  let h = null;
+  if (lock) {
+    h = hands.filter(o => d2(o.c, lock) < Math.max(.25, o.size * 1.5)).sort((a, b) => d2(a.c, lock) - d2(b.c, lock))[0];
+    if (!h) { if (now - lockSeen < 700) return null; lock = null; }
+  }
+  if (!h) {
+    // Das Kamerabild ist ungespiegelt, deshalb meldet MediaPipe die rechte Hand als "Left"
+    const want = settings.hand === 'rechts' ? 'Left' : settings.hand === 'links' ? 'Right' : null;
+    h = hands.filter(o => !want || o.label === want).sort((a, b) => b.size - a.size)[0];
+  }
+  if (!h) return null;
+  lock = h.c; lockSeen = now;
+  return h;
+}
 
 function trackHand(now, dt) {
   if (!landmarker || video.readyState < 2 || video.currentTime === lastVT) return;
   lastVT = video.currentTime;
-  let lm = null;
-  try { const r = landmarker.detectForVideo(video, now); lm = r.landmarks && r.landmarks[0]; } catch {}
+  let hand = null;
+  try { hand = pickHand(landmarker.detectForVideo(video, now), now); } catch {}
+  const lm = hand && hand.lm;
   input.lm = lm || null;
   if (!lm) { input.present = false; input.fire = input.shield = false; pinching = false; openT = 0; return; }
   input.present = true;
-  const cx = (lm[0].x + lm[5].x + lm[17].x) / 3, cy = (lm[0].y + lm[5].y + lm[17].y) / 3;
-  input.x = clamp((1 - cx - MARGIN) / (1 - 2 * MARGIN), 0, 1) * W;
-  input.y = clamp((cy - MARGIN) / (1 - 2 * MARGIN), 0, 1) * H;
+  const z = zoneRect();
+  input.raw = hand.c;
+  input.x = clamp((hand.c.x - z.x) / z.s, 0, 1) * W;
+  input.y = clamp((hand.c.y - z.y) / z.s, 0, 1) * H;
   const size = d2(lm[0], lm[9]) || 1e-6;
   const pinch = d2(lm[4], lm[8]) / size;
   if (pinching ? pinch > 0.5 : pinch < 0.32) pinching = !pinching;
@@ -128,13 +190,27 @@ async function startCam() {
   const { HandLandmarker, FilesetResolver } = await import(CDN + '/vision_bundle.mjs');
   const fileset = await FilesetResolver.forVisionTasks(CDN + '/wasm');
   const make = delegate => HandLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: MODEL, delegate }, runningMode: 'VIDEO', numHands: 1 });
+    baseOptions: { modelAssetPath: MODEL, delegate }, runningMode: 'VIDEO', numHands: 2 });
   try { landmarker = await make('GPU'); } catch { landmarker = await make('CPU'); }
 }
 
 const btnCam = document.getElementById('btnCam'), btnMouse = document.getElementById('btnMouse');
+for (const seg of document.querySelectorAll('.seg')) {
+  const key = seg.dataset.key;
+  const sync = () => { for (const b of seg.children) b.classList.toggle('on', b.dataset.v === settings[key]); };
+  seg.onclick = e => { const v = e.target.dataset.v; if (!v) return; settings[key] = v; lock = null; saveSettings(); sync(); };
+  sync();
+}
+document.getElementById('btnSettings').onclick = () => {
+  state = 'menu'; statusEl.textContent = ''; document.body.classList.remove('idle');
+  btnCam.disabled = btnMouse.disabled = false;
+  if (landmarker) btnCam.textContent = 'WEITER MIT WEBCAM';
+  menu.classList.remove('hidden');
+};
 btnCam.onclick = async () => {
-  initAudio(); btnCam.disabled = btnMouse.disabled = true;
+  initAudio();
+  if (landmarker) { input.mode = 'cam'; input.present = input.fire = input.shield = false; enterReady(); return; }
+  btnCam.disabled = btnMouse.disabled = true;
   try { await startCam(); input.mode = 'cam'; enterReady(); }
   catch (e) {
     console.error(e);
@@ -144,11 +220,11 @@ btnCam.onclick = async () => {
     btnCam.disabled = btnMouse.disabled = false;
   }
 };
-btnMouse.onclick = () => { initAudio(); input.mode = 'mouse'; input.present = true; enterReady(); };
+btnMouse.onclick = () => { initAudio(); input.mode = 'mouse'; input.present = true; input.fire = input.shield = false; enterReady(); };
 
 addEventListener('pointermove', e => { if (input.mode === 'mouse') { input.x = e.clientX; input.y = e.clientY; } });
 addEventListener('pointerdown', e => {
-  if (input.mode !== 'mouse') return;
+  if (input.mode !== 'mouse' || e.target !== cv) return;
   input.x = e.clientX; input.y = e.clientY;
   if (e.button === 2) input.shield = true; else input.fire = true;
 });
@@ -164,9 +240,11 @@ addEventListener('keyup', e => { if (e.code === 'Space' && input.mode === 'mouse
 let state = 'menu', userPause = false, hold = 0, overT = 0, G = null;
 const stars = Array.from({ length: 140 }, () => ({ x: Math.random(), y: Math.random(), z: rand(.2, 1) }));
 
-function enterReady() { menu.classList.add('hidden'); state = 'ready'; hold = 0; }
+function enterReady() { menu.classList.add('hidden'); document.body.classList.add('idle'); state = 'ready'; hold = 0; }
 
 function newGame() {
+  if (input.mode === 'cam' && settings.zone === 'eigen' && input.raw) customC = [input.raw.x, input.raw.y];
+  document.body.classList.remove('idle');
   G = { p: { x: W / 2, y: H * .8, lives: 3, inv: 1.5, energy: 100, lock: false, shield: false, weapon: 1, rapid: 0, cool: 0, tilt: 0 },
     bullets: [], eb: [], enemies: [], parts: [], pups: [], texts: [],
     score: 0, combo: 1, comboT: 0, wave: 0, queue: [], spawnT: 0, banner: 0, bannerText: '', shake: 0, t: 0, flash: 0 };
@@ -220,7 +298,7 @@ function hurtPlayer() {
   G.combo = 1; G.shake = .5; G.flash = .35;
   burst(p.x, p.y, '#35e0ff', 30, 320); sfx(160, .5, 'sawtooth', .12, -120);
   if (p.lives <= 0) {
-    state = 'over'; overT = 0; hold = 0; document.body.classList.remove('playing');
+    state = 'over'; overT = 0; hold = 0; document.body.classList.remove('playing'); document.body.classList.add('idle');
     burst(p.x, p.y, '#ffffff', 60, 480);
     if (G.score > best) { best = G.score; G.newBest = true; saveBest(); }
   }
@@ -490,6 +568,9 @@ function drawCamPreview() {
     for (const q of input.lm) { ctx.beginPath(); ctx.arc(q.x * w, q.y * h, 2.4, 0, TAU); ctx.fill(); }
   }
   ctx.restore();
+  const z = zoneRect();
+  ctx.setLineDash([5, 4]); ctx.strokeStyle = '#ffd27a'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + z.x * w, y + z.y * h, z.s * w, z.s * h); ctx.setLineDash([]);
   ctx.strokeStyle = input.present ? '#35e0ff' : '#ff5a5a'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
   const label = !input.present ? 'KEINE HAND' : input.fire ? 'FEUER' : input.shield ? 'SCHILD' : 'BEREIT';
   text(label, x + w / 2, y - 8, 12, input.present ? '#bfe9ff' : '#ff7a7a');
@@ -511,6 +592,8 @@ function draw() {
   if (state === 'ready') {
     text('BEREIT?', W / 2, H * .4, 64 * U, '#fff', 'center', 800);
     text(startHint, W / 2, H * .4 + 48 * U, Math.max(15, 20 * U), '#bfe9ff', 'center', 500);
+    if (input.mode === 'cam' && input.present && settings.zone === 'eigen')
+      text('Kneife dort, wo die Mitte deiner Steuerzone sein soll', W / 2, H * .4 + 86 * U, Math.max(14, 17 * U), '#ffd27a', 'center', 500);
     if (input.mode === 'cam' && !input.present) text('Halte deine Hand vor die Kamera', W / 2, H * .4 + 86 * U, Math.max(14, 17 * U), '#ffd27a', 'center', 500);
     drawCursor();
   } else {

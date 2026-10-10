@@ -15,6 +15,18 @@ Das Hand-Tracking läuft mit MediaPipe komplett im Browser – es wird kein Kame
 Ohne Webcam geht es auch mit der Maus: Bewegen = Steuern, Linksklick = Feuer,
 Rechtsklick / Leertaste = Schild, P = Pause.
 
+## Einstellungen
+
+Im Startmenü (und über „⚙ Einstellungen“ vor jeder Runde):
+
+- **Hand** – Automatisch, rechte oder linke Hand. Das Spiel bleibt bei der einmal erkannten Hand
+  und springt nicht zur anderen.
+- **Steuerzone** – der Bereich im Kamerabild, in dem du die Hand bewegst (Mitte, Unten, Links, Rechts,
+  Ecken oder „Eigene Position“ = dort, wo du beim Start kneifst). So ist die Hand nicht vor dem Bildschirm.
+- **Bewegung** – wie groß die Handbewegung für den ganzen Bildschirm sein muss.
+
+Die Steuerzone ist im kleinen Kamerabild unten rechts gestrichelt eingezeichnet.
+
 ## Lokal starten
 
 Die Kamera braucht `https` oder `localhost`, deshalb über einen kleinen Server öffnen:
