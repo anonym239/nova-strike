@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vorlage</title>
+</head>
+<body>
+<!--
+  VORLAGE FÜR EIN NEUES SPIEL
+  1. Diesen Ordner kopieren, z. B. nach games/mein-spiel/
+  2. Unten start(), update() und draw() füllen
+  3. Das Spiel in games.js eintragen – dann erscheint es im Menü
+
+  Der Rahmen (lib/shell.js) erledigt Startmenü, Einstellungen, Kamera, Maus-Ersatz, Pause,
+  Punkteanzeige, Rekord und Game Over. Das Spiel bekommt in jedem Frame "api":
+
+    api.W, api.H        Bildschirmgröße in Pixeln
+    api.U               Größenfaktor: alle Längen damit multiplizieren (1 bei 720 px Höhe)
+    api.t               Spielzeit in Sekunden
+    api.score           Punkte (einfach hochzählen)
+    api.hi              true bei Grafik "Schön" (dann sind Leuchteffekte erlaubt)
+    api.input.x / .y    Position der Hand auf dem Bildschirm
+    api.input.vx / .vy  Geschwindigkeit der Hand in Pixel pro Sekunde
+    api.input.present   Hand ist im Bild
+    api.input.pinch     Daumen + Zeigefinger zusammen (gehalten)
+    api.input.pinchDown nur in dem Frame true, in dem gekniffen wurde
+    api.input.open      alle Finger gestreckt
+    api.input.fist      Faust
+    api.gameOver()      beendet die Runde
+    api.sfx(frequenz, dauer, wellenform, lautstärke, tonhöhen-änderung)
+    api.text(text, x, y, größe, farbe, ausrichtung, schriftstärke)
+    api.rand(a, b), api.clamp(v, a, b)
+-->
+<script type="module">
+import { createGame } from '../../lib/shell.js';
+
+let player, coins;
+
+createGame({
+  title: 'Vorlage',
+  tagline: 'Sammle die Punkte ein',
+  colors: ['#35e0ff', '#7dff9b'],          // Farbverlauf für Titel und Schaltflächen
+  bestKey: 'vorlageBest',                  // unter diesem Namen wird der Rekord gespeichert
+  controls: [['🖐️', 'Hand bewegen', 'steuert den Kreis'], ['🤏', 'Kneifen', 'doppelte Punkte']],
+
+  start(api) {
+    player = { x: api.W / 2, y: api.H / 2 };
+    coins = [];
+  },
+
+  update(dt, api) {
+    const { W, H, U, input } = api;
+    player.x = input.x; player.y = input.y;
+    if (coins.length < 5) coins.push({ x: api.rand(.1, .9) * W, y: api.rand(.2, .9) * H });
+    for (const c of coins) {
+      if (Math.hypot(c.x - player.x, c.y - player.y) < 40 * U) {
+        c.dead = true; api.score += input.pinch ? 2 : 1; api.sfx(700, .08, 'triangle', .05, 300);
+      }
+    }
+    coins = coins.filter(c => !c.dead);
+    if (api.t > 30) api.gameOver();          // eine Runde dauert 30 Sekunden
+  },
+
+  draw(ctx, api) {
+    const { W, U, TAU } = api;
+    ctx.fillStyle = '#ffd27a';
+    for (const c of coins) { ctx.beginPath(); ctx.arc(c.x, c.y, 12 * U, 0, TAU); ctx.fill(); }
+    ctx.strokeStyle = api.input.pinch ? '#7dff9b' : '#35e0ff'; ctx.lineWidth = 4 * U;
+    ctx.beginPath(); ctx.arc(player.x, player.y, 28 * U, 0, TAU); ctx.stroke();
+    api.text('Noch ' + Math.ceil(30 - api.t) + ' s', W / 2, 40 * U, 18 * U, '#bfe9ff');
+  },
+});
+</script>
+</body>
+</html>

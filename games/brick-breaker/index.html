@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Brick Breaker</title>
+</head>
+<body>
+<script type="module">
+import { createGame } from '../../lib/shell.js';
+
+const ROW_COLORS = ['#ff4fa3', '#ff7a5c', '#ffd27a', '#7dff9b', '#35e0ff', '#6f8cff', '#b06bff', '#ff4fa3'];
+let bricks, ball, paddle, lives, level, stuckT, banner;
+
+function buildLevel(api) {
+  const { W, U } = api, cols = 10, rows = Math.min(8, 3 + level), gap = 6 * U;
+  const side = 40 * U, bw = (W - side * 2 - gap * (cols - 1)) / cols, bh = 24 * U, top = 110 * U;
+  bricks = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (level > 2 && (r + c + level) % 7 === 0) continue; // ab Level 3 Lücken im Muster
+    bricks.push({ x: side + c * (bw + gap), y: top + r * (bh + gap), w: bw, h: bh, col: ROW_COLORS[r % ROW_COLORS.length] });
+  }
+  banner = 1.8;
+}
+function resetBall() { ball = { x: 0, y: 0, vx: 0, vy: 0, stuck: true }; stuckT = 1.4; }
+
+createGame({
+  title: 'Brick Breaker',
+  tagline: 'Dein Schläger folgt deiner Hand',
+  colors: ['#ffd27a', '#ff4fa3'],
+  bestKey: 'brickBreakerBest',
+  controls: [['🖐️', 'Hand links/rechts', 'bewegt den Schläger'], ['🤏', 'Kneifen', 'startet den Ball sofort'], ['🧱', 'Alle Steine treffen', 'dann kommt das nächste Level']],
+  mouseHint: 'Maus-Modus: Bewegen = Schläger · Linksklick = Ball starten',
+
+  start(api) { lives = 3; level = 1; paddle = { x: api.W / 2, w: 160 }; buildLevel(api); resetBall(); },
+
+  update(dt, api) {
+    const { W, H, U, input, clamp } = api;
+    const pw = Math.max(90, paddle.w - level * 8) * U, py = H - 70 * U, ph = 16 * U, r = 9 * U;
+    paddle.x = clamp(input.x, pw / 2, W - pw / 2);
+    banner = Math.max(0, banner - dt);
+    const speed = 520 * U * (1 + .08 * (level - 1));
+
+    if (ball.stuck) {
+      ball.x = paddle.x; ball.y = py - r - 1; stuckT -= dt;
+      if (input.pinchDown || stuckT <= 0) {
+        const a = -Math.PI / 2 + api.rand(-.5, .5);
+        ball.vx = Math.cos(a) * speed; ball.vy = Math.sin(a) * speed; ball.stuck = false;
+        api.sfx(520, .08, 'square', .05, 200);
+      }
+      return;
+    }
+    // in zwei Teilschritten bewegen, damit der Ball keinen Stein überspringt
+    for (let step = 0; step < 2; step++) {
+      ball.x += ball.vx * dt / 2; ball.y += ball.vy * dt / 2;
+      if (ball.x < r) { ball.x = r; ball.vx = Math.abs(ball.vx); }
+      if (ball.x > W - r) { ball.x = W - r; ball.vx = -Math.abs(ball.vx); }
+      if (ball.y < r + 70 * U) { ball.y = r + 70 * U; ball.vy = Math.abs(ball.vy); }
+      if (ball.vy > 0 && ball.y + r > py && ball.y - r < py + ph && Math.abs(ball.x - paddle.x) < pw / 2 + r) {
+        const a = -Math.PI / 2 + clamp((ball.x - paddle.x) / (pw / 2), -1, 1) * 1.05; // Treffpunkt bestimmt den Winkel
+        ball.vx = Math.cos(a) * speed; ball.vy = Math.sin(a) * speed; ball.y = py - r;
+        api.sfx(330, .06, 'square', .05);
+      }
+      for (const b of bricks) {
+        if (b.dead || ball.x + r < b.x || ball.x - r > b.x + b.w || ball.y + r < b.y || ball.y - r > b.y + b.h) continue;
+        const ox = Math.min(ball.x + r - b.x, b.x + b.w - (ball.x - r)), oy = Math.min(ball.y + r - b.y, b.y + b.h - (ball.y - r));
+        if (ox < oy) ball.vx = -ball.vx; else ball.vy = -ball.vy;
+        b.dead = true; api.score += 10 * level; api.sfx(660, .07, 'triangle', .05, 300);
+        break;
+      }
+    }
+    bricks = bricks.filter(b => !b.dead);
+    if (ball.y > H + 30 * U) {
+      lives--; api.sfx(160, .4, 'sawtooth', .1, -100);
+      if (lives <= 0) return api.gameOver();
+      resetBall();
+    }
+    if (!bricks.length) { level++; api.score += 250; buildLevel(api); resetBall(); api.sfx(440, .4, 'triangle', .08, 500); }
+  },
+
+  draw(ctx, api) {
+    const { W, H, U, TAU } = api;
+    const pw = Math.max(90, paddle.w - level * 8) * U, py = H - 70 * U;
+    for (const b of bricks) {
+      if (api.hi) { ctx.shadowColor = b.col; ctx.shadowBlur = 10; }
+      ctx.fillStyle = 'rgba(8,10,26,.9)'; ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.strokeStyle = b.col; ctx.lineWidth = 2 * U; ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+    }
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffd27a'; ctx.beginPath(); ctx.roundRect(paddle.x - pw / 2, py, pw, 16 * U, 8 * U); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ball.x, ball.y, 9 * U, 0, TAU); ctx.fill();
+    for (let i = 0; i < 3; i++) api.text('♥', W - 30 * U - i * 34 * U, 46 * U, 30 * U, i < lives ? '#ff4fa3' : '#2b3350');
+    api.text('LEVEL ' + level, W / 2, 40 * U, 16 * U, '#bfe9ff');
+    if (banner > 0) { ctx.globalAlpha = Math.min(1, banner * 2); api.text('LEVEL ' + level, W / 2, H * .55, 54 * U, '#fff', 'center', 800); ctx.globalAlpha = 1; }
+  },
+});
+</script>
+</body>
+</html>

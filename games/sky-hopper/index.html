@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sky Hopper</title>
+</head>
+<body>
+<script type="module">
+import { createGame } from '../../lib/shell.js';
+
+let bird, gates, spawnT, flapT;
+
+createGame({
+  title: 'Sky Hopper',
+  tagline: 'Jedes Kneifen ist ein Flügelschlag',
+  colors: ['#b06bff', '#ff4fa3'],
+  bestKey: 'skyHopperBest',
+  controls: [['🤏', 'Kneifen', 'ein Flügelschlag nach oben'], ['🚧', 'Durch die Lücken', 'jedes Tor gibt einen Punkt'], ['🖐️', 'Hand ruhig halten', 'die Position ist egal']],
+  mouseHint: 'Maus-Modus: Linksklick = Flügelschlag',
+
+  start(api) { bird = { y: api.H * .45, vy: 0, rot: 0 }; gates = []; spawnT = 1.2; flapT = 0; },
+
+  update(dt, api) {
+    const { W, H, U, input, rand } = api;
+    const bx = W * .28, br = 18 * U, speed = (250 + Math.min(120, api.score * 4)) * U;
+    if (input.pinchDown) { bird.vy = -520 * U; flapT = .15; api.sfx(700, .07, 'triangle', .05, 300); }
+    flapT = Math.max(0, flapT - dt);
+    bird.vy += 1500 * U * dt; bird.y += bird.vy * dt;
+    bird.rot += (Math.max(-.5, Math.min(1, bird.vy / (700 * U))) - bird.rot) * Math.min(1, dt * 10);
+    if (bird.y < br) { bird.y = br; bird.vy = 0; }
+
+    spawnT -= dt;
+    if (spawnT <= 0) {
+      const gap = Math.max(170, 250 - api.score * 3) * U;
+      gates.push({ x: W + 60 * U, w: 70 * U, gap, cy: rand(.25, .75) * H });
+      spawnT = Math.max(1.1, 1.7 - api.score * .02);
+    }
+    for (const g of gates) {
+      g.x -= speed * dt;
+      if (!g.passed && g.x + g.w < bx - br) { g.passed = true; api.score++; api.sfx(880, .1, 'square', .04, 400); }
+      const inX = bx + br > g.x && bx - br < g.x + g.w;
+      if (inX && (bird.y - br < g.cy - g.gap / 2 || bird.y + br > g.cy + g.gap / 2)) return api.gameOver();
+    }
+    gates = gates.filter(g => g.x > -g.w - 10);
+    if (bird.y > H - br) api.gameOver();
+  },
+
+  draw(ctx, api) {
+    const { W, H, U, TAU } = api, bx = W * .28;
+    for (const g of gates) {
+      if (api.hi) { ctx.shadowColor = '#b06bff'; ctx.shadowBlur = 14; }
+      ctx.fillStyle = 'rgba(20,12,40,.95)'; ctx.strokeStyle = '#b06bff'; ctx.lineWidth = 3 * U;
+      for (const [y, h] of [[-10, g.cy - g.gap / 2 + 10], [g.cy + g.gap / 2, H]]) { ctx.fillRect(g.x, y, g.w, h); ctx.strokeRect(g.x, y, g.w, h); }
+    }
+    ctx.shadowBlur = 0;
+    ctx.save(); ctx.translate(bx, bird.y); ctx.rotate(bird.rot);
+    ctx.fillStyle = '#ffd27a'; ctx.beginPath(); ctx.ellipse(0, 0, 22 * U, 16 * U, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ff4fa3'; ctx.beginPath(); ctx.moveTo(18 * U, -4 * U); ctx.lineTo(34 * U, 2 * U); ctx.lineTo(18 * U, 7 * U); ctx.fill();
+    ctx.fillStyle = '#05060f'; ctx.beginPath(); ctx.arc(9 * U, -5 * U, 3.2 * U, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff3c9'; ctx.beginPath(); ctx.ellipse(-6 * U, (flapT > 0 ? -9 : 4) * U, 11 * U, 6 * U, flapT > 0 ? -.6 : .3, 0, TAU); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#b06bff'; ctx.fillRect(0, H - 4 * U, W, 4 * U);
+  },
+});
+</script>
+</body>
+</html>
